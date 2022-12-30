@@ -6,20 +6,20 @@ using Iot.Device.Board;
 using Iot.Device.Ssd13xx;
 using Iot.Device.Ssd13xx.Commands;
 using Iot.Device.Ssd13xx.Commands.Ssd1306Commands;
+using static ByteOperations;
 
 public class Ssd1306E2CScreen : IDisposable
 {
+    public const int TotalPages = 8;
     private static readonly Logger Log = Logger.Get();
-    const int TotalPages = 8;
-    const int BitsInByte = 8;
     bool isInitialized = false;
 
     private Ssd1306 device;
     private readonly ScreenSize screenSize;
     private byte[] displayBuffer;
 
-    int bytesInRow => (int)screenSize.Horizontal / BitsInByte;
-    int rowsInPage => (int)screenSize.Vertical / TotalPages;
+    int bytesInRow => (int)screenSize.Horizontal;
+    int rowsInPage => (int)screenSize.Vertical / TotalPages / BitsInByte;
     int bytesInPage => bytesInRow * rowsInPage * TotalPages;
 
     public Ssd1306E2CScreen(ScreenSize screenSize, Ssd1306 device)
@@ -28,6 +28,7 @@ public class Ssd1306E2CScreen : IDisposable
         this.device = device ?? throw new ArgumentNullException(nameof(device));
         this.displayBuffer = new byte[screenSize.Vertical * screenSize.Horizontal / BitsInByte];
     }
+
     public void Init()
     {
         // Turn screen off
@@ -57,62 +58,30 @@ public class Ssd1306E2CScreen : IDisposable
         isInitialized = true;
     }
 
-    public void ClearDisplay()
+    public void UpdateSection(ScreenSection section)
     {
-        Log.Info($"Clear whole buffer '{this.displayBuffer.Length}'");
-        // Cleanup buffer
-        for (int y = 0; y < displayBuffer.Length; y++)
-        {
-            Array.Fill(displayBuffer, byte.MinValue);
-        }
-        UpdateFullScreenFromBuffer();
-    }
+        var startPage = Math.Ceiling(section.Position.Row / (decimal)rowsInPage);
+        var endPage = startPage + Math.Ceiling(section.Data.RowsNumber / (decimal)rowsInPage);
+        var startColumn = section.Position.Column;
+        var endColumn = section.Position.Column + section.Data.Width - 1;
 
-    public void ShowLine()
-    {
-        for (uint x = 0; x < 32; x++)
-        {
-            SetPixel(x, x, true);
-        }
-        UpdateFullScreenFromBuffer();
-    }
+        if(startPage > TotalPages)
+            throw new ArgumentException($"Provided section start page is outside of screen area");
+        if(endPage > TotalPages)
+            throw new ArgumentException($"Provided section end page is outside of screen area");
 
-    private void SetPixel(uint x, uint y, bool isSet = true)
-    {
-        var columnIndex = x;
-        var rowIndex = y / BitsInByte;
-        var byteIndex = (this.screenSize.Horizontal * rowIndex) + columnIndex;
-
-        var newValue = 1 << (int)(y % BitsInByte);
-        var currentValue = this.displayBuffer[byteIndex];
-        int updatedValue = isSet
-            ? currentValue | newValue
-            : currentValue ^ newValue;
-        this.displayBuffer[byteIndex] = (byte)updatedValue;
-    }
-
-    private void UpdateFullScreenFromBuffer()
-    {
-        UpdateSection(new ScreenSection
-        {
-            StartPage = 0,
-            EndPage = 7,
-            StartColumn = 0,
-            Width = this.screenSize.Horizontal,
-        }, this.displayBuffer);
-    }
-
-    private void UpdateSection(ScreenSection section, Span<byte> data)
-    {
-        // validate section is within screen
-        device.SendCommand(new SetColumnAddress((byte)section.StartColumn, (byte)(section.StartColumn + section.Width - 1)));
-        device.SendCommand(new SetPageAddress((PageAddress)section.StartPage, (PageAddress)section.EndPage));
-        device.SendData(data);
+        if(section.Position.Column > this.screenSize.Horizontal)
+            throw new ArgumentException($"Provided section start column is outside of screen area");
+        if(endColumn > this.screenSize.Horizontal)
+            throw new ArgumentException($"Provided section end column is outside of screen area");
+        Log.Info($"Update Screen startpage: {startPage}, endPage: {endPage}, startColumn: {startColumn}, endColumn: {endColumn}, bytes: {section.Data.Data.Length}");
+        device.SendCommand(new SetColumnAddress((byte)startColumn, (byte)endColumn));
+        device.SendCommand(new SetPageAddress((PageAddress)(startPage), (PageAddress)(endPage)));
+        device.SendData(section.Data.Data);
     }
 
     public void Dispose()
     {
-        Log.Warning($"Disposing");
         device.SendCommand(new SetDisplayOff());
 
         this.device.Dispose();
